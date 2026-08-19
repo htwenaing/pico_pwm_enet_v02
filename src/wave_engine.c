@@ -33,8 +33,12 @@ uint ref2_pwm_chan;
 float global_frequency = 60.0f;
 uint32_t global_phase_increment = 0;
 
+float current_system_freq_hz = 50.0f; // Default baseline frequency (e.g. 50 Hz or 60 Hz)
+
+
 // Converts target frequency into a 24.8 fixed-point tuning word step size
 void update_system_frequency(float hz) {
+	current_system_freq_hz = hz;
     if (hz < 40.0f) hz = 40.0f;
     if (hz > 70.0f) hz = 70.0f;
     

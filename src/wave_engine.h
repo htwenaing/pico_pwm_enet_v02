@@ -32,6 +32,8 @@ extern critical_section_t wave_crit_sec;
 extern float global_frequency;
 extern uint32_t global_phase_increment; // Step size tracking scaling fractional parts
 
+extern float current_system_freq_hz;
+
 void init_wave_engine(void);
 void core1_entry(void);
 void update_system_frequency(float hz); // Helper function called by AT command parser

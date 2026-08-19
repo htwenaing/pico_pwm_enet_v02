@@ -78,6 +78,7 @@ Let me know if your serial hardware setup requires a specific custom baud profil
 #include <stdlib.h>
 #include "pico/stdlib.h"
 #include "hardware/sync.h"
+#include "at_commands.h"
 
 // Bring in your project's engine headers
 #include "wave_engine.h"
@@ -87,10 +88,26 @@ Let me know if your serial hardware setup requires a specific custom baud profil
 static char uart_rx_buffer[CMD_BUFFER_SIZE];
 static int buffer_idx = 0;
 
+
 // Internal helper to parse commands once a newline is received
 static void parse_uart_at_command(const char* cmd) {
     extern critical_section_t wave_crit_sec;
+	int ch = getchar_timeout_us(0);
+	
+	// Find where parse_uart_at_command was, and change its execution block to:
+	if (ch == '\r' || ch == '\n') {
+		if (buffer_idx > 0) {
+			uart_rx_buffer[buffer_idx] = '\0';
+			printf("\n");
+			// Call the shared library explicitly passing false for network source
+			execute_unified_at_command(uart_rx_buffer, false); 
+			buffer_idx = 0;
+			printf("PICO> ");
+			fflush(stdout);
+		}
+	}	
     
+	
     // 1. Sine Wave Settings: AT+PWM=<channel>,<amplitude>,<phase>,<enable>
     if (strncmp(cmd, "AT+PWM=", 7) == 0) {
         int ch_num, phase_deg, enabled_state;
@@ -173,7 +190,9 @@ static void parse_uart_at_command(const char* cmd) {
     else {
         printf("ERROR: UNKNOWN SYNTAX\r\n");
     }
+	
 }
+
 
 void init_usb_console(void) {
     // 1. Initialize universal SDK stdio routing (handles both USB and UART)
@@ -184,7 +203,7 @@ void init_usb_console(void) {
     uart_set_baudrate(uart0, 115200); 
 }
 
-
+/*
 void process_usb_console_loop(void) {
     int ch = getchar_timeout_us(0);
     
@@ -215,6 +234,57 @@ void process_usb_console_loop(void) {
             uart_rx_buffer[buffer_idx++] = ch;
         }
         
+        ch = getchar_timeout_us(0);
+    }
+}
+*/
+
+void process_usb_console_loop(void) {
+    // 1. Initial character poll from the unified stream
+    int ch = getchar_timeout_us(0);
+    
+    // 2. Loop through all characters waiting in the buffer
+    while (ch != PICO_ERROR_TIMEOUT) {
+        
+        // Handle Backspace strings gracefully for terminal emulators
+        if (ch == '\b' || ch == 127) {
+            if (buffer_idx > 0) {
+                buffer_idx--;
+                printf("\b \b"); 
+                fflush(stdout);
+            }
+            ch = getchar_timeout_us(0); // Poll next char and skip rest of loop
+            continue;
+        }
+
+        // Echo the valid input character back to the terminal screen
+        putchar(ch);
+        fflush(stdout); 
+        
+        // ====================================================================
+        // FIXED REGION: Ensure 'ch' evaluations sit safely inside the loop bounds
+        // ====================================================================
+        if (ch == '\r' || ch == '\n') {
+            if (buffer_idx > 0) {
+                uart_rx_buffer[buffer_idx] = '\0'; // Null-terminate character slice
+                printf("\n");
+				
+				//parse_uart_at_command(uart_rx_buffer);
+                
+                // Call the centralized shared library parser passing false for network source
+                execute_unified_at_command(uart_rx_buffer, false); 
+                
+                buffer_idx = 0; // Reset tracking index position
+                printf("PICO> ");
+                fflush(stdout);
+            }
+        } 
+        // Populate command buffer while protecting array boundaries
+        else if (buffer_idx < (CMD_BUFFER_SIZE - 1)) {
+            uart_rx_buffer[buffer_idx++] = ch;
+        }
+        
+        // 3. Advance to check the next sequential buffer slot immediately
         ch = getchar_timeout_us(0);
     }
 }

@@ -1,5 +1,5 @@
 /*
-3 phase voltage, current generator for simulation (by: Htwe Naing, last updated: 7/26/26)
+3 phase voltage, current generator for simulation (by: Htwe Naing, last updated: 8/19/26) working ok, but not fully tested yet
 
 Raspberry Pi Pico, 
 which uses a special UF2 bootloader to let you load programs by dragging and dropping files onto a virtual USB drive.
@@ -23,6 +23,27 @@ ninja
 ******** using picotool for programming *********** 
 .\picotool.exe load -f .\pico_pwm_example.uf2
 
+//must set under \ioLibrary_Driver\Ethernetwizchip_conf.h, if not set on CMakeLists.txt
+#ifndef _WIZCHIP_
+#define _WIZCHIP_                      W5100S   // W5100, W5100S, W5200, W5300, W5500
+#endif
+
+
+***** out *********
+pico_sine_team_project/
+├── CMakeLists.txt             <-- Team build script
+├── pico_sdk_import.cmake      
+├── lib/
+│   └── libcore_engine.a       <-- Put your compiled .a file here
+└── src/
+    ├── at_commands.c          <-- THE ONLY EDITABLE CODE FILE
+    ├── at_commands.h
+    ├── config_i2c.h
+    ├── i2c_expanders.h	        
+    ├── network_stack.h
+	├── ssd1306.h
+    ├── usb_console.h
+    └── wave_engine.h
 
 */
 
@@ -130,8 +151,7 @@ int main(void) {
 	
     // Initialize the physical Wiznet W5100S chip (DHCP Engine, 1ms Hardware Timer)
     //printf("[BOOT] Initializing W5100S Hardwired TCP/IP Ethernet block...\n");
-    //init_network_stack();
-	/**/
+	
     // 2. Initialize the selective interface stack based on choice selection
     if (use_network_interface) {
         printf("[SYSTEM] Booting up in Network Stack mode exclusively...\n");
@@ -140,18 +160,15 @@ int main(void) {
 		//init_usb_console();
         printf("[SYSTEM] Booting up in Local USB Serial interface mode exclusively...\n");
     }	
-		
-	
+			
     // 4. Fire up hardware-timed interrupts on Core 1 AFTER network structures are allocated
-    multicore_launch_core1(core1_entry);	
+    multicore_launch_core1(core1_entry);	//this line must be after wave and net init
 	
 	//test
 	update_display_status();
 
     // Initialize your shared cross-core thread protector boundaries
     critical_section_init(&wave_crit_sec);
-
-
 
     // ====================================================================
     // 2. LAUNCH DETERMINISTIC SYNTHESIZER ENGINE (Core 1 Release)
@@ -223,26 +240,13 @@ int main(void) {
         // EXCLUSIVE POLLING ALLOCATION ENGINE
         // Alternates entirely based on your layout boolean selection
         // ====================================================================
-		/**/
+		
         if (use_network_interface) {
             process_network_loop(); // Dedicated entirely to Ethernet Port 5000
         } else {
             process_usb_console_loop(); // Dedicated entirely to USB serial terminals
         }
-		
-		/*
-        // A. Continuous, non-blocking polling execution for AT Console inputs
-        process_usb_console_loop();
-        
-        // B. Continuous, non-blocking evaluation of Wiznet lease shifts and Port 5000 
-        //process_network_loop();
-        */
-		
-        // C. Asynchronous OLED refresh window logic
-        // (Ensure this code has NO delays or long blocking loops!)
-        // if (should_refresh_oled_buffers()) {
-        //     refresh_oled_display_layout();
-        // }
+
     }
 
     return 0;

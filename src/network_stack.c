@@ -33,10 +33,11 @@
 #include "timer.h"
 #include "cmd_tcp.h"
 
-
 // Project Engine Hooks
 #include "wave_engine.h"
 #include "i2c_expanders.h"
+
+#include "hardware/uart.h"
 
 #define PLL_SYS_KHZ             (133 * 1000)
 #define ETHERNET_BUF_MAX_SIZE   (1024 * 2)
@@ -44,6 +45,12 @@
 #define SOCKET_DNS              1
 #define SOCKET_CMD_TCP          2
 #define PORT_CMD_TCP            5000
+
+//uart0
+#define BRIDGE_UART      uart0
+#define BRIDGE_BAUD_RATE 115200
+#define UART_TX_PIN      0
+#define UART_RX_PIN      1
 
 // Globals
 wiz_NetInfo g_net_info = {
@@ -73,6 +80,23 @@ static int32_t net_retval = 0;
 static bool ethernet_hardware_alive = false;
 
 extern critical_section_t wave_crit_sec;
+
+
+void init_uart_bridge(void) {
+    uart_init(BRIDGE_UART, BRIDGE_BAUD_RATE);
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+    uart_set_hw_flow(BRIDGE_UART, false, false);
+    uart_set_format(BRIDGE_UART, 8, 1, UART_PARITY_NONE);
+}
+
+// Inside execute_unified_at_command() or where TCP data is parsed:
+void forward_cmd_to_second_pico(const char* cmd) {
+    // Transmit command string with trailing newline to Pico B
+    uart_puts(BRIDGE_UART, cmd);
+    uart_puts(BRIDGE_UART, "\r\n");
+}
+
 
 static void repeating_timer_callback(void) {
 	/*
@@ -221,107 +245,20 @@ void process_network_loop(void) {
             close(SOCKET_CMD_TCP); 
         } else {
             if (tcp_state > 1 && tcp_state < 255) {
-				// Inside parse_network_cmd(), clear all old if/else commands and replace them with:
-				//static void parse_network_cmd(void) {
-					// Forward raw network data packet straight to the shared library passing true
-					execute_unified_at_command((char*)g_cmd_tcp_buf, true); 
-				//}				
-				/*
-                // Inline command routing extraction block
-                char* cmd = (char*)g_cmd_tcp_buf;
-                if (strncmp(cmd, "AT+FREQ=", 8) == 0) {
-                    float target_hz;
-                    if (sscanf(cmd, "AT+FREQ=%f", &target_hz) == 1 && target_hz >= 40.0f && target_hz <= 70.0f) {
-                        update_system_frequency(target_hz);
-                        send(SOCKET_CMD_TCP, (uint8_t*)"OK\r\n", 4);
-                    }
-                }
-                // (Add your explicit AT+PWM or bypass calls here as required)
-				*/
+				// Forward raw network data packet straight to the shared library passing true
+				execute_unified_at_command((char*)g_cmd_tcp_buf, true); 
             } 
             else if (tcp_state == 254) { // Matches your project's completion token
                 g_cmd_tcp_flag = 0;
             }
         }
     }
+	
+	// Inside process_network_loop() on Pico A:
+	if (uart_is_readable(BRIDGE_UART) && getSn_SR(SOCKET_CMD_TCP) == SOCK_ESTABLISHED) {
+		char rx_char = uart_getc(BRIDGE_UART);
+		send(SOCKET_CMD_TCP, (uint8_t*)&rx_char, 1);
+	}
+	
+	
 }
-
-
-/*
-void process_network_loop(void) {
-    if (!ethernet_hardware_alive) {
-        return; 
-    }
-
-    // 1. Step the DHCP Engine
-    if (g_net_info.dhcp == NETINFO_DHCP) {
-        net_retval = DHCP_run();
-        if (net_retval == DHCP_IP_LEASED && g_dhcp_get_ip_flag == 0) {
-            g_dhcp_get_ip_flag = 1;
-            oled_dhcp_ip_flag  = 1;
-        } 
-    }
-
-    // 2. Standard Non-Blocking Socket State Machine (Replaces cmd_tcps)
-    // Only listen if we have an IP address mapped
-    if (g_dhcp_get_ip_flag == 1 || g_net_info.dhcp == NETINFO_STATIC) {
-        
-        // Get the current status of the TCP socket
-        uint8_t s_status = getSn_SR(SOCKET_CMD_TCP);
-        
-        switch (s_status) {
-            case SOCK_CLOSED:
-                // Open the socket in TCP mode on Port 5000
-                if (socket(SOCKET_CMD_TCP, Sn_MR_TCP, PORT_CMD_TCP, 0) == SOCKET_CMD_TCP) {
-                    printf("[NET] Socket %d opened on port %d\n", SOCKET_CMD_TCP, PORT_CMD_TCP);
-                }
-                break;
-
-            case SOCK_INIT:
-                // Put the socket in listen/server mode
-                listen(SOCKET_CMD_TCP);
-                printf("[NET] Socket %d listening...\n", SOCKET_CMD_TCP);
-                break;
-
-            case SOCK_ESTABLISHED:
-                // A client is connected! Check if data has arrived
-                {
-                    int32_t received_bytes = getSn_RX_RSR(SOCKET_CMD_TCP);
-                    if (received_bytes > 0) {
-                        // Limit to prevent memory/buffer overflow bounds
-                        if (received_bytes > (ETHERNET_BUF_MAX_SIZE - 1)) {
-                            received_bytes = ETHERNET_BUF_MAX_SIZE - 1;
-                        }
-                        
-                        // Clear buffer and receive packet data cleanly
-                        memset(g_cmd_tcp_buf, 0, ETHERNET_BUF_MAX_SIZE);
-                        int32_t len = recv(SOCKET_CMD_TCP, g_cmd_tcp_buf, received_bytes);
-                        
-                        if (len > 0) {
-                            g_cmd_tcp_buf[len] = '\0'; // Null-terminate string array
-                            
-                            // Clean up trailing carriage returns or newlines from network clients
-                            while (len > 0 && (g_cmd_tcp_buf[len - 1] == '\r' || g_cmd_tcp_buf[len - 1] == '\n')) {
-                                g_cmd_tcp_buf[--len] = '\0';
-                            }
-                            
-                            if (len > 0) {
-                                // Forward straight to your new centralized parser!
-                                execute_unified_at_command((char*)g_cmd_tcp_buf, true);
-                            }
-                        }
-                    }
-                }
-                break;
-
-            case SOCK_CLOSE_WAIT:
-                // Connection was dropped by the remote client; disconnect smoothly
-                disconnect(SOCKET_CMD_TCP);
-                break;
-
-            default:
-                break;
-        }
-    }
-}
-*/
